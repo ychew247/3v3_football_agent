@@ -50,8 +50,11 @@ CHASE_BEHIND_M = 0.35          # 追球时站到球后方的距离
 # ======================================================================
 
 GUARD_FACE_BALL = True
-GUARD_THREAT_ENTER_X = -1.0
-GUARD_THREAT_EXIT_X = -0.7
+# 守门员始终按可见球的横向位置移动；不以球是否进入禁区作为开关。
+# 目标 y = ball.y * GUARD_LATERAL_TRACK_GAIN，并限制在球门内的安全横移范围。
+GUARD_LATERAL_TRACK_GAIN = 0.65
+GUARD_LATERAL_MAX_OFFSET_M = 1.0
+GUARD_LATERAL_DEADBAND_M = 0.08
 
 SUPPORT_DIST_M = 3.0
 

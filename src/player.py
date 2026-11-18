@@ -114,7 +114,8 @@ class Player:
 
         # block/guard 的跨帧迟滞状态
         self._block_pressing: bool = False
-        self._guard_threatened: bool = False
+        # 守门员最近一次横向目标；小幅球位置噪声不改变目标，避免左右抖动。
+        self._guard_target_y: float | None = None
         # 门线撞球进门迟滞状态
         self._goal_line_push: bool = False
         # support 卡住后临时转 attack 的跨帧状态
@@ -593,9 +594,10 @@ class Player:
             )
 
     def guard(self) -> None:
-        """守门:站小禁区中央待命
+        """守门：固定在门前纵向位置，按可见球的横向位置小范围移动。
 
-        无 pose(未就位)时退回站小禁区中央。
+        横移不依赖球是否进入己方禁区：球在禁区外时也会跟随其 ``y`` 位置。
+        目标点始终被限制在球门内侧的安全横向范围，守门员不会因此向前出击。
         """
         home = own_goal_area_center(self.context) if self.context is not None else None
         if home is None or self.pose is None:
@@ -604,6 +606,28 @@ class Player:
             return
 
         ball = self.context.ball if self.context is not None else None
+        home_x, home_y = home
+
+        if ball is None:
+            # 球未知时回到球门中央；下一次看到球后立即重新计算横移目标。
+            target_y = home_y
+            self._guard_target_y = target_y
+            self.action = "guard:home"
+        else:
+            # 故意不检查 ball.x：即使球还在禁区线外，也根据横向威胁调整站位。
+            desired_y = clamp(
+                home_y + ball.y * GUARD_LATERAL_TRACK_GAIN,
+                home_y - GUARD_LATERAL_MAX_OFFSET_M,
+                home_y + GUARD_LATERAL_MAX_OFFSET_M,
+            )
+            previous_y = self._guard_target_y
+            if (
+                previous_y is None
+                or abs(desired_y - previous_y) >= GUARD_LATERAL_DEADBAND_M
+            ):
+                self._guard_target_y = desired_y
+            target_y = self._guard_target_y
+            self.action = "guard:track"
 
         # 待命朝向:朝球(便于快速反应);球不可见则朝对方门方向(默认 0)。
         face = 0.0
@@ -612,11 +636,13 @@ class Player:
                 self.pose.x, self.pose.y, ball.x, ball.y,
             )
 
-        self.action = "guard:home"
         debugdraw.point(
-            home[0], home[1], rgb=(0.0, 0.6, 1.0), scale=0.2, ns="guard_home",
+            home_x, target_y,
+            rgb=(0.0, 0.6, 1.0), scale=0.2, ns="guard_target",
         )
-        self.walk_to(home, face=face, avoid_ball=True, avoid_robots=True)
+        self.walk_to(
+            (home_x, target_y), face=face, avoid_ball=True, avoid_robots=True,
+        )
 
     def support(self) -> None:
         """支援:站在 球→己方门中心 连线上距球 ``SUPPORT_DIST_M`` 处补防。
