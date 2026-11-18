@@ -154,3 +154,6 @@ Thumbs.db
 old_src/*
 ref/*
 
+# Uneccessary Files
+booster_3v3_codex_handoff.md
+strategy-implementation-roadmap.md
