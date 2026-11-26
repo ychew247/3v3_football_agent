@@ -64,6 +64,18 @@ SUPPORT_DIST_M = 3.0
 
 ATTACKER_KEEP_DIST_MARGIN_M = 0.3  # 防止 Attacker 选择产生震荡
 
+# 球进入我方半场后启用“逼抢 + 补位 + 守门”防守阵型。
+DEFENSE_ACTIVATE_X = 0.0
+DEFENSE_ROLE_KEEP_MARGIN_M = 0.45  # 防守角色切换需明显更优，避免每帧换人
+
+# 补位者盯防离己方球门更近、同时更接近球的对手，并保持在球的己方一侧。
+DEFENSE_THREAT_BALL_WEIGHT = 0.35
+DEFENSE_COVER_GOAL_SIDE_M = 0.9
+DEFENSE_COVER_BEHIND_BALL_M = 1.0
+DEFENSE_COVER_MIN_PRESS_GAP_M = 1.1
+DEFENSE_COVER_LATERAL_GAP_M = 0.8
+DEFENSE_FIELD_MARGIN_M = 0.35
+
 FALLEN_COST = 10.0  # 摔倒球员的距离惩罚值(米)
 
 
@@ -75,6 +87,15 @@ FALLEN_COST = 10.0  # 摔倒球员的距离惩罚值(米)
 KICKOFF_STAGE_M = 2.0
 KICKOFF_FRONT_MARGIN = 0.1
 KICKOFF_LATERAL_TOL = 0.35
+
+# 对方开球的 READY 站位：两名外场防守员紧贴中圈外、同一条横线上。
+# 0.35 m 留给中圈边界和走位误差；y 方向错开以保留补位空间。
+READY_OPP_KICKOFF_CIRCLE_GAP_M = 0.35
+READY_OPP_KICKOFF_LATERAL_OFFSET_M = 0.75
+
+# 对方实际开球窗口：退到中圈外 3 m 以上，避免在球附近长时间原地等待。
+OPP_KICKOFF_DEFENDER_BACK_OFFSET_M = 1.8
+OPP_KICKOFF_DEFENDER_LATERAL_OFFSET_M = 0.9
 
 CENTER_LEAVE_DIST_M = 0.15 # 球离开中心点多少距离，认为球已经动了
 

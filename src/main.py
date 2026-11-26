@@ -23,7 +23,7 @@ from .framework.agent import SoccerAgentMixin
 from .framework.types import KICKING_TEAM_NONE, Context, GameState, SetPlay
 from .param import *
 from .player import Player
-from .utils import dist, opponent_goal, own_goal
+from .utils import clamp_inside_field, dist, opponent_goal, own_goal
 
 
 _log = logging.getLogger(__name__)
@@ -118,6 +118,9 @@ class SoccerSimAgent(SoccerAgentMixin, AgentBase):
         store.cur_phase = None
         store.kickoff_taker = None    # 锁定的开球主罚球员 id(每次进入开球时重选)
         store.normal_attacker = None
+        store.defense_guard_id = None
+        store.defense_presser_id = None
+        store.defense_cover_id = None
 
     @staticmethod
     def play(context: Context, players: list[Player], store) -> None:
@@ -190,6 +193,16 @@ class SoccerSimAgent(SoccerAgentMixin, AgentBase):
 
 def _clear_normal_sticky(store) -> None:
     store.normal_attacker = None
+    store.defense_guard_id = None
+    store.defense_presser_id = None
+    store.defense_cover_id = None
+
+
+def _clear_defensive_roles(store) -> None:
+    """离开防守阵型时清除角色锁定，避免下次防守沿用失效人选。"""
+    store.defense_guard_id = None
+    store.defense_presser_id = None
+    store.defense_cover_id = None
 
 
 def _player_dist_to_ball(context: Context, p: Player) -> float:
@@ -225,13 +238,155 @@ def _select_closest_attacker(
     return best
 
 
+def _select_sticky_role(
+    players: list[Player],
+    score,
+    preferred_id: int | None,
+) -> Player:
+    """按 ``score`` 选最低分球员；旧人未明显落后时保留其角色。"""
+    ranked = [(p, score(p)) for p in players]
+    best, best_score = min(ranked, key=lambda item: item[1])
+    preferred = next((item for item in ranked if item[0].id == preferred_id), None)
+    if (
+        preferred is not None
+        and preferred[1] <= best_score + DEFENSE_ROLE_KEEP_MARGIN_M
+    ):
+        return preferred[0]
+    return best
+
+
+def _defensive_threat(context: Context):
+    """选当前最具威胁的对手，供补位者盯防。
+
+    没有“持球人”状态，因此只用公开位置估计：离己方球门更近、同时更接近
+    球的对手优先。结果可能为 ``None``，此时补位者退守球的己方一侧。
+    """
+    ball = context.ball
+    if ball is None:
+        return None
+    gx, gy = own_goal(context)
+    candidates = [
+        (opponent_id, opponent)
+        for opponent_id, opponent in context.opponents.items()
+        if opponent.pose is not None
+    ]
+    if not candidates:
+        return None
+    return min(
+        candidates,
+        key=lambda item: (
+            dist(item[1].pose.x, item[1].pose.y, gx, gy)
+            + DEFENSE_THREAT_BALL_WEIGHT
+            * dist(item[1].pose.x, item[1].pose.y, ball.x, ball.y)
+        ),
+    )
+
+
+def _cover_target(
+    context: Context,
+    presser: Player,
+    threat,
+) -> tuple[float, float] | None:
+    """返回补位/盯防点：对手的球门侧，同时与逼抢者拉开距离。"""
+    ball = context.ball
+    if ball is None:
+        return None
+
+    anchor = threat[1].pose if threat is not None else ball
+    gx, gy = own_goal(context)
+    dx, dy = gx - anchor.x, gy - anchor.y
+    length = math.hypot(dx, dy)
+    if length < 1e-6:
+        ux, uy = -1.0, 0.0
+    else:
+        ux, uy = dx / length, dy / length
+
+    # 先站到威胁对手的球门侧；再确保站在球的己方一侧，形成补位深度。
+    tx = min(
+        anchor.x + ux * DEFENSE_COVER_GOAL_SIDE_M,
+        ball.x - DEFENSE_COVER_BEHIND_BALL_M,
+    )
+    ty = anchor.y + uy * DEFENSE_COVER_GOAL_SIDE_M
+
+    # 若补位点会与逼抢者重合，则横向错开，避免两名防守员围到同一点。
+    if presser.pose is not None and dist(
+        tx, ty, presser.pose.x, presser.pose.y,
+    ) < DEFENSE_COVER_MIN_PRESS_GAP_M:
+        side = 1.0 if ty <= presser.pose.y else -1.0
+        ty += side * DEFENSE_COVER_LATERAL_GAP_M
+
+    return clamp_inside_field(context, tx, ty, margin=DEFENSE_FIELD_MARGIN_M)
+
+
+def _act_defensive_normal(context: Context, players: list[Player], store) -> None:
+    """我方半场防守：一人逼抢、一人补位/盯防、一人守门。"""
+    ball = context.ball
+    if ball is None or not players:
+        return
+
+    gx, gy = own_goal(context)
+    guard = _select_sticky_role(
+        players,
+        lambda p: dist(p.pose.x, p.pose.y, gx, gy),
+        getattr(store, "defense_guard_id", None),
+    )
+    store.defense_guard_id = guard.id
+    guard.guard()
+
+    rest = [p for p in players if p is not guard]
+    if not rest:
+        return
+
+    presser = _select_sticky_role(
+        rest,
+        lambda p: _player_dist_to_ball(context, p),
+        getattr(store, "defense_presser_id", None),
+    )
+    store.defense_presser_id = presser.id
+    presser.action = "defense:press"
+    presser.attack()
+
+    rest = [p for p in rest if p is not presser]
+    if not rest:
+        return
+
+    threat = _defensive_threat(context)
+    target = _cover_target(context, presser, threat)
+    cover = _select_sticky_role(
+        rest,
+        lambda p: (
+            dist(p.pose.x, p.pose.y, target[0], target[1])
+            if target is not None else math.inf
+        ),
+        getattr(store, "defense_cover_id", None),
+    )
+    store.defense_cover_id = cover.id
+    threat_label = "ball" if threat is None else f"opp{threat[0]}"
+    cover.action = f"defense:cover:{threat_label}"
+    cover.move_to_position(target)
+
+    # 3v3 正常只有一个剩余补位者；若人数更多，额外球员仍保持原有支援。
+    for p in rest:
+        if p is not cover:
+            p.action = "support"
+            p.support()
+
+
 def _act_normal(context: Context, players: list[Player], store) -> None:
-    """NORMAL:距球最近者 attack,剩下人里离己方门最近者 guard,其余 support。
+    """NORMAL:我方半场使用防守阵型，其余保持原有攻击/守门/支援分工。
 
     ``players`` 是本帧可行动球员(已就绪、pose 已知),这里直接挑角色并执行。
     """
     if not players:
         return
+
+    ball = context.ball
+    if ball is not None and ball.x <= DEFENSE_ACTIVATE_X:
+        store.normal_attacker = None
+        _act_defensive_normal(context, players, store)
+        return
+
+    _clear_defensive_roles(store)
 
     attacker = _select_closest_attacker(
         context, players, getattr(store, "normal_attacker", None),
@@ -285,7 +440,7 @@ def _act_our_kickoff(context: Context, players: list[Player], store) -> None:
 
 
 def _act_opp_kickoff(context: Context, players: list[Player]) -> None:
-    """对方开球:一人守门,其余人站到中圈外固定点等待。"""
+    """对方开球:一人守门,两名外场球员在中圈外平行等待。"""
     if not players:
         return
     gx, gy = own_goal(context)
@@ -294,7 +449,9 @@ def _act_opp_kickoff(context: Context, players: list[Player]) -> None:
 
     rest = [p for p in players if p is not guard]
     r = context.field.circle_radius
-    slots = [(-r - 0.5, 0.0), (-r - 2.0, 0.5)]
+    defender_x = -r - OPP_KICKOFF_DEFENDER_BACK_OFFSET_M
+    lateral = OPP_KICKOFF_DEFENDER_LATERAL_OFFSET_M
+    slots = [(defender_x, -lateral), (defender_x, lateral)]
     for p, target in zip(rest, slots):
         p.action = "opp_kickoff:ready"
         p.walk_to(target, avoid_ball=True, avoid_robots=True)
@@ -354,13 +511,15 @@ def _act_ready(context: Context, players: list[Player]) -> None:
                 avoid_ball=True,
                 avoid_robots=True,
             )
-    # 对方开球：优先级站位：(-中圈半径 - 0.5, 0), (我方 goal area 中心点，0)， （我方禁区线中心点， 0)
+    # 对方开球：门将居中；两名外场防守员在中圈外、同一条横线上等待。
     else:
+        defender_x = -field.circle_radius - READY_OPP_KICKOFF_CIRCLE_GAP_M
+        lateral = READY_OPP_KICKOFF_LATERAL_OFFSET_M
         if len(players) >= 1:
             p1 = players[0]
             p1.action = "ready"
             p1.walk_to(
-                (-field.circle_radius - 0.5, 0.0),
+                (defender_x, -lateral),
                 face=0.0,
                 avoid_ball=True,
                 avoid_robots=True,
@@ -378,7 +537,7 @@ def _act_ready(context: Context, players: list[Player]) -> None:
             p3 = players[2]
             p3.action = "ready"
             p3.walk_to(
-                (-field.length / 2.0 + field.penalty_area_length, 0.0),
+                (defender_x, lateral),
                 face=0.0,
                 avoid_ball=True,
                 avoid_robots=True,
