@@ -1,1 +1,5 @@
+<<<<<<< HEAD
 {"version":2,"scene":{"mode":"pinned","id":"football3v3"},"projectMode":"soccer-match","agentDevTarget":{"serialNumber":"x1s4c","name":"Virtual robot","model":"Booster K1","robotType":"RemoteVirtualRobot","deviceType":"virtual","updatedAt":1794969561526},"updatedAt":1794969561698}
+=======
+{"version":2,"scene":{"mode":"pinned","id":"football3v3"},"projectMode":"soccer-match","agentDevTarget":{"serialNumber":"x1s4c","name":"Virtual robot","model":"Booster K1","robotType":"RemoteVirtualRobot","deviceType":"virtual","updatedAt":1794970866436},"updatedAt":1794970866659}
+>>>>>>> main
